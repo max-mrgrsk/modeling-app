@@ -1,5 +1,5 @@
 import { PathToNode, Program, SourceRange } from 'lang/wasm'
-import { VITE_KC_API_WS_MODELING_URL, VITE_KC_CONNECTION_TIMEOUT_MS } from 'env'
+import { VITE_KC_API_WS_MODELING_URL } from 'env'
 import { Models } from '@kittycad/lib'
 import { exportSave } from 'lib/exportSave'
 import { uuidv4 } from 'lib/utils'
@@ -8,6 +8,9 @@ import { Themes, getThemeColorForEngine } from 'lib/theme'
 import { DefaultPlanes } from 'wasm-lib/kcl/bindings/DefaultPlanes'
 
 let lastMessage = ''
+
+// TODO(paultag): This ought to be tweakable.
+const pingIntervalMs = 10000
 
 interface CommandInfo {
   commandType: CommandTypes
@@ -56,11 +59,6 @@ interface PendingCommand extends CommandInfo {
 
 export interface ArtifactMap {
   [key: string]: ResultCommand | PendingCommand | FailedCommand
-}
-
-interface NewTrackArgs {
-  conn: EngineConnection
-  mediaStream: MediaStream
 }
 
 // This looks funny, I know. This is needed because node and the browser
@@ -188,10 +186,28 @@ export type EngineConnectionState =
   | State<EngineConnectionStateType.Disconnecting, DisconnectingValue>
   | State<EngineConnectionStateType.Disconnected, void>
 
+export type PingPongState = 'OK' | 'BAD'
+
+export enum EngineConnectionEvents {
+  // Fires for each ping-pong success or failure.
+  PingPongChanged = 'ping-pong-changed', // (state: PingPongState) => void
+
+  // For now, this is only used by the NetworkHealthIndicator.
+  // We can eventually use it for more, but one step at a time.
+  ConnectionStateChanged = 'connection-state-changed', // (state: EngineConnectionState) => void
+
+  // These are used for the EngineCommandManager and were created
+  // before onConnectionStateChange existed.
+  ConnectionStarted = 'connection-started', // (engineConnection: EngineConnection) => void
+  Opened = 'opened', // (engineConnection: EngineConnection) => void
+  Closed = 'closed', // (engineConnection: EngineConnection) => void
+  NewTrack = 'new-track', // (track: NewTrackArgs) => void
+}
+
 // EngineConnection encapsulates the connection(s) to the Engine
 // for the EngineCommandManager; namely, the underlying WebSocket
 // and WebRTC connections.
-class EngineConnection {
+class EngineConnection extends EventTarget {
   websocket?: WebSocket
   pc?: RTCPeerConnection
   unreliableDataChannel?: RTCDataChannel
@@ -224,7 +240,12 @@ class EngineConnection {
       }
     }
     this._state = next
-    this.onConnectionStateChange(this._state)
+
+    this.dispatchEvent(
+      new CustomEvent(EngineConnectionEvents.ConnectionStateChanged, {
+        detail: this._state,
+      })
+    )
   }
 
   private failedConnTimeout: Timeout | null
@@ -232,78 +253,40 @@ class EngineConnection {
   readonly url: string
   private readonly token?: string
 
-  // For now, this is only used by the NetworkHealthIndicator.
-  // We can eventually use it for more, but one step at a time.
-  private onConnectionStateChange: (state: EngineConnectionState) => void
-
-  // These are used for the EngineCommandManager and were created
-  // before onConnectionStateChange existed.
-  private onEngineConnectionOpen: (engineConnection: EngineConnection) => void
-  private onConnectionStarted: (engineConnection: EngineConnection) => void
-  private onClose: (engineConnection: EngineConnection) => void
-  private onNewTrack: (track: NewTrackArgs) => void
-
   // TODO: actual type is ClientMetrics
   public webrtcStatsCollector?: () => Promise<WebRTCClientMetrics>
   private engineCommandManager: EngineCommandManager
 
-  constructor({
-    engineCommandManager,
-    url,
-    token,
-    onConnectionStateChange = () => {},
-    onNewTrack = () => {},
-    onEngineConnectionOpen = () => {},
-    onConnectionStarted = () => {},
-    onClose = () => {},
-  }: {
-    engineCommandManager: EngineCommandManager
-    url: string
-    token?: string
-    onConnectionStateChange?: (state: EngineConnectionState) => void
-    onEngineConnectionOpen?: (engineConnection: EngineConnection) => void
-    onConnectionStarted?: (engineConnection: EngineConnection) => void
-    onClose?: (engineConnection: EngineConnection) => void
-    onNewTrack?: (track: NewTrackArgs) => void
-  }) {
-    this.engineCommandManager = engineCommandManager
+  private pingPongSpan: { ping?: Date; pong?: Date }
+
+  constructor({ url, token }: { url: string; token?: string }) {
+    super()
+
     this.url = url
     this.token = token
     this.failedConnTimeout = null
-    this.onConnectionStateChange = onConnectionStateChange
-    this.onEngineConnectionOpen = onEngineConnectionOpen
-    this.onConnectionStarted = onConnectionStarted
 
-    this.onClose = onClose
-    this.onNewTrack = onNewTrack
-
-    // TODO(paultag): This ought to be tweakable.
-    const pingIntervalMs = 10000
+    this.pingPongSpan = { ping: undefined, pong: undefined }
 
     // Without an interval ping, our connection will timeout.
-    let pingInterval = setInterval(() => {
+    setInterval(() => {
       switch (this.state.type as EngineConnectionStateType) {
         case EngineConnectionStateType.ConnectionEstablished:
           this.send({ type: 'ping' })
+          this.pingPongSpan.ping = new Date()
           break
         case EngineConnectionStateType.Disconnecting:
         case EngineConnectionStateType.Disconnected:
-          clearInterval(pingInterval)
+          // Reconnect if we have disconnected.
+          if (!this.isConnecting()) this.connect()
           break
         default:
+          if (this.isConnecting()) break
+          // Means we never could do an initial connection. Reconnect everything.
+          if (!this.pingPongSpan.ping) this.connect()
           break
       }
     }, pingIntervalMs)
-
-    const connectionTimeoutMs = VITE_KC_CONNECTION_TIMEOUT_MS
-    let connectRetryInterval = setInterval(() => {
-      if (this.state.type !== EngineConnectionStateType.Disconnected) return
-
-      // Only try reconnecting when completely disconnected.
-      clearInterval(connectRetryInterval)
-      console.log('Trying to reconnect')
-      this.connect()
-    }, connectionTimeoutMs)
   }
 
   isConnecting() {
@@ -385,7 +368,11 @@ class EngineConnection {
           // dance is it safest to connect the video tracks / stream
           case 'connected':
             // Let the browser attach to the video stream now
-            this.onNewTrack({ conn: this, mediaStream: this.mediaStream! })
+            this.dispatchEvent(
+              new CustomEvent(EngineConnectionEvents.NewTrack, {
+                detail: { conn: this, mediaStream: this.mediaStream! },
+              })
+            )
             break
           case 'failed':
             this.disconnectAll()
@@ -514,7 +501,9 @@ class EngineConnection {
           // Everything is now connected.
           this.state = { type: EngineConnectionStateType.ConnectionEstablished }
 
-          this.onEngineConnectionOpen(this)
+          this.dispatchEvent(
+            new CustomEvent(EngineConnectionEvents.Opened, { detail: this })
+          )
         })
 
         this.unreliableDataChannel.addEventListener('close', (event) => {
@@ -555,6 +544,10 @@ class EngineConnection {
           type: ConnectingType.WebSocketEstablished,
         },
       }
+
+      // Send an initial ping
+      this.send({ type: 'ping' })
+      this.pingPongSpan.ping = new Date()
 
       // This is required for when KCMA is running stand-alone / within Tauri.
       // Otherwise when run in a browser, the token is sent implicitly via
@@ -621,12 +614,34 @@ failed cmd type was ${artifactThatFailed?.commandType}`
       let resp = message.resp
 
       // If there's no body to the response, we can bail here.
-      // !resp.type is usually "pong" response for our "ping"
       if (!resp || !resp.type) {
         return
       }
 
       switch (resp.type) {
+        case 'pong':
+          this.pingPongSpan.pong = new Date()
+          if (this.pingPongSpan.ping && this.pingPongSpan.pong) {
+            if (
+              Math.abs(
+                this.pingPongSpan.pong.valueOf() -
+                  this.pingPongSpan.ping.valueOf()
+              ) >= pingIntervalMs
+            ) {
+              this.dispatchEvent(
+                new CustomEvent(EngineConnectionEvents.PingPongChanged, {
+                  detail: 'BAD',
+                })
+              )
+            } else {
+              this.dispatchEvent(
+                new CustomEvent(EngineConnectionEvents.PingPongChanged, {
+                  detail: 'OK',
+                })
+              )
+            }
+          }
+          break
         case 'ice_server_info':
           let ice_servers = resp.data?.ice_servers
 
@@ -773,27 +788,11 @@ failed cmd type was ${artifactThatFailed?.commandType}`
       }
     })
 
-    const connectionTimeoutMs = VITE_KC_CONNECTION_TIMEOUT_MS
-    if (this.failedConnTimeout) {
-      clearTimeout(this.failedConnTimeout)
-      this.failedConnTimeout = null
-    }
-    this.failedConnTimeout = setTimeout(() => {
-      if (this.isReady()) {
-        return
-      }
-      this.failedConnTimeout = null
-      this.state = {
-        type: EngineConnectionStateType.Disconnecting,
-        value: {
-          type: DisconnectingType.Timeout,
-        },
-      }
-      this.disconnectAll()
-      this.finalizeIfAllConnectionsClosed()
-    }, connectionTimeoutMs)
-
-    this.onConnectionStarted(this)
+    this.dispatchEvent(
+      new CustomEvent(EngineConnectionEvents.ConnectionStarted, {
+        detail: this,
+      })
+    )
   }
   unreliableSend(message: object | string) {
     // TODO(paultag): Add in logic to determine the connection state and
@@ -841,6 +840,8 @@ interface UnreliableSubscription<T extends UnreliableResponses['type']> {
   callback: (data: Extract<UnreliableResponses, { type: T }>) => void
 }
 
+// TODO: Should eventually be replaced with native EventTarget event system,
+// as it manages events in a more familiar way to other developers.
 export interface Subscription<T extends ModelTypes> {
   event: T
   callback: (
@@ -868,7 +869,11 @@ export type CommandLog =
       data: null
     }
 
-export class EngineCommandManager {
+export enum EngineCommandManagerEvents {
+  EngineAvailable = 'engine-available',
+}
+
+export class EngineCommandManager extends EventTarget {
   artifactMap: ArtifactMap = {}
   lastArtifactMap: ArtifactMap = {}
   sceneCommandArtifacts: ArtifactMap = {}
@@ -897,10 +902,9 @@ export class EngineCommandManager {
     }
   } = {} as any
 
-  callbacksEngineStateConnection: ((state: EngineConnectionState) => void)[] =
-    []
-
   constructor() {
+    super()
+
     this.engineConnection = undefined
   }
 
@@ -954,17 +958,22 @@ export class EngineCommandManager {
       engineCommandManager: this,
       url,
       token,
-      onConnectionStateChange: (state: EngineConnectionState) => {
-        for (let cb of this.callbacksEngineStateConnection) {
-          cb(state)
-        }
-      },
-      onEngineConnectionOpen: () => {
+    })
+
+    this.dispatchEvent(
+      new CustomEvent(EngineCommandManagerEvents.EngineAvailable, {
+        detail: this.engineConnection,
+      })
+    )
+
+    this.engineConnection.addEventListener(
+      EngineConnectionEvents.Opened,
+      () => {
         // Set the stream background color
         // This takes RGBA values from 0-1
         // So we convert from the conventional 0-255 found in Figma
 
-        this.sendSceneCommand({
+        void this.sendSceneCommand({
           type: 'modeling_cmd_req',
           cmd_id: uuidv4(),
           cmd: {
@@ -972,7 +981,6 @@ export class EngineCommandManager {
             color: getThemeColorForEngine(theme),
           },
         })
-
         // Make the axis gizmo.
         // We do this after the connection opened to avoid a race condition.
         // Connected opened is the last thing that happens when the stream
@@ -1007,36 +1015,50 @@ export class EngineCommandManager {
           setIsStreamReady(true)
           executeCode(undefined, true)
         })
-      },
-      onClose: () => {
-        setIsStreamReady(false)
-      },
-      onConnectionStarted: (engineConnection) => {
-        engineConnection?.pc?.addEventListener('datachannel', (event) => {
-          let unreliableDataChannel = event.channel
+      }
+    )
 
-          unreliableDataChannel.addEventListener('message', (event) => {
-            const result: UnreliableResponses = JSON.parse(event.data)
-            Object.values(
-              this.unreliableSubscriptions[result.type] || {}
-            ).forEach(
-              // TODO: There is only one response that uses the unreliable channel atm,
-              // highlight_set_entity, if there are more it's likely they will all have the same
-              // sequence logic, but I'm not sure if we use a single global sequence or a sequence
-              // per unreliable subscription.
-              (callback) => {
-                if (
-                  result?.data?.sequence &&
-                  result?.data.sequence > this.inSequence &&
-                  result.type === 'highlight_set_entity'
-                ) {
-                  this.inSequence = result.data.sequence
-                  callback(result)
-                }
+    this.engineConnection.addEventListener(
+      EngineConnectionEvents.Closed,
+      () => {
+        setIsStreamReady(false)
+      }
+    )
+
+    this.engineConnection.addEventListener(
+      EngineConnectionEvents.ConnectionStarted,
+      (({ detail: engineConnection }: CustomEvent) => {
+        engineConnection?.pc?.addEventListener(
+          'datachannel',
+          (event: RTCDataChannelEvent) => {
+            let unreliableDataChannel = event.channel
+
+            unreliableDataChannel.addEventListener(
+              'message',
+              (event: MessageEvent) => {
+                const result: UnreliableResponses = JSON.parse(event.data)
+                Object.values(
+                  this.unreliableSubscriptions[result.type] || {}
+                ).forEach(
+                  // TODO: There is only one response that uses the unreliable channel atm,
+                  // highlight_set_entity, if there are more it's likely they will all have the same
+                  // sequence logic, but I'm not sure if we use a single global sequence or a sequence
+                  // per unreliable subscription.
+                  (callback) => {
+                    if (
+                      result?.data?.sequence &&
+                      result?.data.sequence > this.inSequence &&
+                      result.type === 'highlight_set_entity'
+                    ) {
+                      this.inSequence = result.data.sequence
+                      callback(result)
+                    }
+                  }
+                )
               }
             )
-          })
-        })
+          }
+        )
 
         // When the EngineConnection starts a connection, we want to register
         // callbacks into the WebSocket/PeerConnection.
@@ -1069,20 +1091,23 @@ export class EngineCommandManager {
               this.handleFailedModelingCommand(message)
             }
           }
-        })
-      },
-      onNewTrack: ({ mediaStream }) => {
-        console.log('received track', mediaStream)
+        )
+      }) as EventListener
+    )
 
-        mediaStream.getVideoTracks()[0].addEventListener('mute', () => {
-          console.log('peer is not sending video to us')
-          // this.engineConnection?.close()
-          // this.engineConnection?.connect()
-        })
+    this.engineConnection.addEventListener(EngineConnectionEvents.NewTrack, (({
+      detail: { mediaStream },
+    }: CustomEvent) => {
+      console.log('received track', mediaStream)
 
-        setMediaStream(mediaStream)
-      },
-    })
+      mediaStream.getVideoTracks()[0].addEventListener('mute', () => {
+        console.log('peer is not sending video to us')
+        // this.engineConnection?.close()
+        // this.engineConnection?.connect()
+      })
+
+      setMediaStream(mediaStream)
+    }) as EventListener)
 
     this.engineConnection?.connect()
   }
@@ -1326,9 +1351,6 @@ export class EngineCommandManager {
     id: string
   ) {
     delete this.unreliableSubscriptions[event][id]
-  }
-  onConnectionStateChange(callback: (state: EngineConnectionState) => void) {
-    this.callbacksEngineStateConnection.push(callback)
   }
   // We make this a separate function so we can call it from wasm.
   clearDefaultPlanes() {
