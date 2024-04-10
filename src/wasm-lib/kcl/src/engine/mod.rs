@@ -93,7 +93,7 @@ pub trait EngineManager: std::fmt::Debug + Send + Sync + 'static {
         } else {
             batched_requests
         };
-        // println!("Running batch: {final_req:#?}");
+        debug_batch(&final_req);
 
         // Create the map of original command IDs to source range.
         // This is for the wasm side, kurt needs it for selections.
@@ -185,4 +185,22 @@ pub fn is_cmd_with_return_values(cmd: &kittycad::types::ModelingCmd) -> bool {
     };
 
     true
+}
+
+#[allow(dead_code)] // Only used in debugging.
+fn debug_batch(msg: &WebSocketRequest) {
+    match msg {
+        WebSocketRequest::ModelingCmdReq { cmd, cmd_id } => {
+            println!("[ {cmd_id}: {:?} ]", cmd);
+        }
+
+        WebSocketRequest::ModelingCmdBatchReq { requests, .. } => {
+            let names: Vec<_> = requests
+                .iter()
+                .map(|req| format!("{}: {:?}\n", req.cmd_id, req.cmd))
+                .collect();
+            println!("[ {} ]", names.join(", "))
+        }
+        other => panic!("this isn't a modeling command or batch: {other:?}"),
+    }
 }
