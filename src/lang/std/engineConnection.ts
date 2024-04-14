@@ -275,7 +275,7 @@ class EngineConnection extends EventTarget {
         // (Check the current state that we're about to override that
         // it was a Connecting state.)
         if (this._state.type === EngineConnectionStateType.Connecting) {
-          if (!sub.value) sub.value = {}
+          if (!sub.value) sub.value = { error: ConnectionError.Unknown }
           sub.value.lastConnectingValue = this._state.value
         }
 
@@ -302,9 +302,18 @@ class EngineConnection extends EventTarget {
 
   private pingPongSpan: { ping?: Date; pong?: Date }
 
-  constructor({ url, token }: { url: string; token?: string }) {
+  constructor({
+    engineCommandManager,
+    url,
+    token,
+  }: {
+    engineCommandManager: EngineCommandManager
+    url: string
+    token?: string
+  }) {
     super()
 
+    this.engineCommandManager = engineCommandManager
     this.url = url
     this.token = token
     this.failedConnTimeout = null
@@ -858,12 +867,13 @@ class EngineConnection extends EventTarget {
           }
         )
 
-    promiseIsAuthed.then((e) => {
+    // The type of e is complex due to two separate functions to check user info.
+    promiseIsAuthed.then((e: any) => {
       if (e.status >= 200 && e.status < 400) {
         createWebSocketConnection()
       } else if (e.status === 401) {
         this.state = {
-          type: EngineConnectionStateType.Disconnected,
+          type: EngineConnectionStateType.Disconnecting,
           value: {
             type: DisconnectingType.Error,
             value: {
@@ -874,7 +884,7 @@ class EngineConnection extends EventTarget {
         }
       } else {
         this.state = {
-          type: EngineConnectionStateType.Disconnected,
+          type: EngineConnectionStateType.Disconnecting,
           value: {
             type: DisconnectingType.Error,
             value: {
@@ -1119,7 +1129,7 @@ export class EngineCommandManager extends EventTarget {
 
     this.engineConnection.addEventListener(
       EngineConnectionEvents.ConnectionStarted,
-      ({ detail: engineConnection }: CustomEvent) => {
+      ({ detail: engineConnection }: any) => {
         engineConnection?.pc?.addEventListener(
           'datachannel',
           (event: RTCDataChannelEvent) => {
@@ -1154,7 +1164,9 @@ export class EngineCommandManager extends EventTarget {
 
         // When the EngineConnection starts a connection, we want to register
         // callbacks into the WebSocket/PeerConnection.
-        engineConnection.websocket?.addEventListener('message', ((event) => {
+        engineConnection.websocket?.addEventListener('message', ((
+          event: MessageEvent
+        ) => {
           if (event.data instanceof ArrayBuffer) {
             // If the data is an ArrayBuffer, it's  the result of an export command,
             // because in all other cases we send JSON strings. But in the case of
@@ -1185,9 +1197,9 @@ export class EngineCommandManager extends EventTarget {
           }
         }) as EventListener)
 
-        this.engineConnection.addEventListener(
+        this.engineConnection?.addEventListener(
           EngineConnectionEvents.NewTrack,
-          (({ detail: { mediaStream } }: CustomEvent) => {
+          (({ detail: { mediaStream } }: any) => {
             console.log('received track', mediaStream)
 
             mediaStream.getVideoTracks()[0].addEventListener('mute', () => {
