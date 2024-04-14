@@ -3,14 +3,12 @@ import { isCursorInSketchCommandRange } from 'lang/util'
 import { engineCommandManager, kclManager } from 'lib/singletons'
 import { useModelingContext } from 'hooks/useModelingContext'
 import { useCommandsContext } from 'hooks/useCommandsContext'
+import { useNetworkContext } from 'hooks/useNetworkContext'
+import { NetworkHealthState } from 'hooks/useNetworkStatus'
 import { ActionButton } from 'components/ActionButton'
 import usePlatform from 'hooks/usePlatform'
 import { isSingleCursorInPipe } from 'lang/queryAst'
 import { useKclContext } from 'lang/KclProvider'
-import {
-  NetworkHealthState,
-  useNetworkStatus,
-} from 'components/NetworkHealthIndicator'
 import { useStore } from 'useStore'
 
 export const Toolbar = () => {
@@ -33,7 +31,7 @@ export const Toolbar = () => {
       context.selectionRanges
     )
   }, [engineCommandManager.artifactMap, context.selectionRanges])
-  const { overallState } = useNetworkStatus()
+  const { overallState } = useNetworkContext()
   const { isExecuting } = useKclContext()
   const { isStreamReady } = useStore((s) => ({
     isStreamReady: s.isStreamReady,

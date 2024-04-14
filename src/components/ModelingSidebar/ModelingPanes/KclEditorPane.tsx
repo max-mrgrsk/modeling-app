@@ -40,6 +40,8 @@ import {
   defaultHighlightStyle,
 } from '@codemirror/language'
 import { useModelingContext } from 'hooks/useModelingContext'
+import { useNetworkContext } from 'hooks/useNetworkContext'
+import { NetworkHealthState } from 'hooks/useNetworkStatus'
 import interact from '@replit/codemirror-interact'
 import { engineCommandManager, sceneInfra, kclManager } from 'lib/singletons'
 import { useKclContext } from 'lang/KclProvider'
@@ -89,7 +91,7 @@ export const KclEditorPane = () => {
   const { code, errors } = useKclContext()
   const lastEvent = useRef({ event: '', time: Date.now() })
   const { copilotLSP, kclLSP } = useLspContext()
-  const { overallState } = useNetworkStatus()
+  const { overallState } = useNetworkContext()
   const isNetworkOkay = overallState === NetworkHealthState.Ok
   const navigate = useNavigate()
 

@@ -294,7 +294,6 @@ function resetAndSetEngineEntitySelectionCmds(
   selections: SelectionToEngine[]
 ): Models['WebSocketRequest_type'][] {
   if (!engineCommandManager.engineConnection?.isReady()) {
-    console.log('engine connection is not ready')
     return []
   }
   return [
