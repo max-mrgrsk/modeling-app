@@ -93,7 +93,9 @@ export const LspProvider = ({ children }: { children: React.ReactNode }) => {
     if (!TEST) {
       Server.initialize(intoServer, fromServer).then((lspServer) => {
         lspServer.start('kcl', token)
-        setIsKclLspServerReady(true)
+        .then(() => {
+          setIsKclLspServerReady(true)
+        }).catch(console.warn)
       })
     }
 
@@ -151,7 +153,9 @@ export const LspProvider = ({ children }: { children: React.ReactNode }) => {
     if (!TEST) {
       Server.initialize(intoServer, fromServer).then((lspServer) => {
         lspServer.start('copilot', token)
-        setIsCopilotLspServerReady(true)
+        .then(() => {
+          setIsCopilotLspServerReady(true)
+        }).catch(console.warn)
       })
     }
 
