@@ -14,7 +14,8 @@ import { LanguageSupport } from '@codemirror/language'
 import { useNavigate } from 'react-router-dom'
 import { paths } from 'lib/paths'
 import { FileEntry } from 'lib/types'
-import { NetworkHealthState, useNetworkStatus } from './NetworkHealthIndicator'
+import { useNetworkContext } from 'hooks/useNetworkContext'
+import { NetworkHealthState } from 'hooks/useNetworkStatus'
 
 const DEFAULT_FILE_NAME: string = 'main.kcl'
 
@@ -80,7 +81,7 @@ export const LspProvider = ({ children }: { children: React.ReactNode }) => {
   } = useSettingsAuthContext()
   const token = auth?.context?.token
   const navigate = useNavigate()
-  const { overallState } = useNetworkStatus()
+  const { overallState } = useNetworkContext()
   const isNetworkOkay = overallState === NetworkHealthState.Ok
 
   // So this is a bit weird, we need to initialize the lsp server and client.

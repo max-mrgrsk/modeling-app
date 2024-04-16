@@ -59,10 +59,6 @@ import {
   completionKeymap,
   hasNextSnippetField,
 } from '@codemirror/autocomplete'
-import {
-  NetworkHealthState,
-  useNetworkStatus,
-} from 'components/NetworkHealthIndicator'
 import { kclErrorsToDiagnostics } from 'lang/errors'
 
 export const editorShortcutMeta = {
