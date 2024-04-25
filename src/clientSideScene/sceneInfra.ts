@@ -28,7 +28,6 @@ import { Axis } from 'lib/selections'
 import { type BaseUnit } from 'lib/settings/settingsTypes'
 import { CameraControls } from './CameraControls'
 import { EngineCommandManager } from 'lang/std/engineConnection'
-import { settings } from 'lib/settings/initialSettings'
 import { MouseState } from 'machines/modelingMachine'
 
 type SendType = ReturnType<typeof useModelingContext>['send']
