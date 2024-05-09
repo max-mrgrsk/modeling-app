@@ -23,6 +23,7 @@ import { useRefreshSettings } from 'hooks/useRefreshSettings'
 import { ModelingSidebar } from 'components/ModelingSidebar/ModelingSidebar'
 import { LowerRightControls } from 'components/LowerRightControls'
 import ModalContainer from 'react-modal-promise'
+import Gizmo from 'components/Gizmo'
 
 export function App() {
   useRefreshSettings(paths.FILE + 'SETTINGS')
@@ -129,6 +130,7 @@ export function App() {
       <Stream className="absolute inset-0 z-0" />
       {/* <CamToggle /> */}
       <LowerRightControls />
+      <Gizmo />
     </div>
   )
 }
